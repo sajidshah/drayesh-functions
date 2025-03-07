@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "daraysh-d576a"
-  }
+    "default": "daraysh-d576a",
+    "staging": "castrank-functions"
+  },
+  "targets": {},
+  "etags": {}
 }

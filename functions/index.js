@@ -197,7 +197,7 @@ exports.createCheckout = functions.https.onRequest(async (req, res) => {
                 initial_amount: parseFloat(price),
                 points,
                 status,
-                tax: parseFloat(tax.toFixed(2)),
+                tax: VAT_RATE, //parseFloat(tax.toFixed(2)),
                 ticket_id: product_id,
                 uid,
                 updated_at: Date.now()
