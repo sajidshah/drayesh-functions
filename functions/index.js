@@ -1,7 +1,8 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const cors = require("cors")({ origin: true });
-const axios = require("axios");
+const express = require("express");
+const rateLimit = require("express-rate-limit");
+const cors = require("cors");
 
 let HYPERPAY_BASE_URL
 let ACCESS_TOKEN
@@ -24,8 +25,22 @@ if (admin.apps.length === 0) {
     admin.initializeApp();
 }
 
+// Create an Express app
+const app = express();
+app.use(cors({ origin: true })); // Allow all origins (change to specific domains for better security)
+app.use(express.json()); // Parse JSON request bodies
 
-exports.submitAnswer = functions.https.onRequest(async (req, res) => {
+// Apply rate limiting
+const limiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 5, // Limit each user to 5 requests per minute
+    message: { error: "Too many requests, please try again later." },
+    keyGenerator: (req) => req.headers.authorization || req.ip, // Use Firebase ID token if available, else fallback to IP
+});
+
+app.use(limiter);
+
+app.post("/submitAnswer", async (req, res) => {
     // Get the Firebase ID Token from the request headers
     const idToken = req.headers.authorization?.split("Bearer ")[1];
 
@@ -34,10 +49,7 @@ exports.submitAnswer = functions.https.onRequest(async (req, res) => {
     }
 
     try {
-        // // Verify the token
-        // const decodedToken = await admin.auth().verifyIdToken(idToken);
-        // const uid = decodedToken.uid;
-
+ 
         // Verify the token
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
@@ -127,8 +139,8 @@ exports.submitAnswer = functions.https.onRequest(async (req, res) => {
 // Define VAT (15%)
 const VAT_RATE = 0.15;
 // const FieldValue = admin.firestore.FieldValue;
+app.post("/createCheckout", async (req, res) => {
 
-exports.createCheckout = functions.https.onRequest(async (req, res) => {
     cors(req, res, async () => {
         if (req.method !== "POST") {
             return res.status(405).json({ error: "Method Not Allowed" });
@@ -260,3 +272,5 @@ exports.createCheckout = functions.https.onRequest(async (req, res) => {
         }
     });
 });
+
+exports.api = functions.https.onRequest(app);
