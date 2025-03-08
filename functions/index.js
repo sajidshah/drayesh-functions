@@ -26,103 +26,111 @@ if (admin.apps.length === 0) {
 
 
 exports.submitAnswer = functions.https.onRequest(async (req, res) => {
-    // Get the Firebase ID Token from the request headers
+    console.log("submitAnswer function triggered");
+
     const idToken = req.headers.authorization?.split("Bearer ")[1];
 
     if (!idToken) {
+        console.warn("Unauthorized access attempt", { headers: req.headers });
         return res.status(401).json({ error: "Unauthorized" });
     }
 
     try {
-        // // Verify the token
-        // const decodedToken = await admin.auth().verifyIdToken(idToken);
-        // const uid = decodedToken.uid;
-
-        // Verify the token
+        console.log("Verifying token...");
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         const uid = decodedToken.uid;
+        console.log("User authenticated:", uid);
 
-        // Perform operations based on the UID
-        // Example: Fetch user data from Firestore
-        const userDoc = await admin.firestore().collection("users").doc(uid).get();
-
-        if (!userDoc.exists) {
-            return res.status(404).json({ error: "User not found" });
-        }
-
-        console.log('User Requesting: ', uid);
-        // const userData = userDoc.data();
-
-
-        // Extract `question_doc_id` and `answer` from request body
         const { question_doc_id, answer } = req.body;
-
         if (!question_doc_id || !answer) {
-            return res.status(400).json({ error: "Missing required parameters", question_doc_id, answer });
+            return res.status(400).json({ error: "Missing required parameters" });
         }
 
-        // Reference the quiz question document
+        const userRef = admin.firestore().collection("users").doc(uid);
         const questionRef = admin.firestore().collection("quiz_questions").doc(question_doc_id);
-        const questionSnap = await questionRef.get();
 
-        if (!questionSnap.exists) {
-            return res.status(404).json({ error: "Question not found" });
-        }
+        console.log("Starting Firestore transaction...");
+        const result = await admin.firestore().runTransaction(async (transaction) => {
+            // ✅ Step 1: Read user document FIRST
+            const userSnap = await transaction.get(userRef);
+            if (!userSnap.exists) {
+                return { error: "User not found", status: 404 };
+            }
+            const userData = userSnap.data();
+            const lastSubmissionTime = userData.last_submission_time || 0;
 
-        const questionData = questionSnap.data();
+            // ✅ Step 2: Read question document SECOND
+            const questionSnap = await transaction.get(questionRef);
+            if (!questionSnap.exists) {
+                return { error: "Question not found", status: 404 };
+            }
+            let questionData = questionSnap.data();
+            let participants = questionData.participants || [];
 
-        // Check if user has already answered
-        const participants = questionData.participants || [];
+            // ✅ Step 3: Check time limit (AFTER all reads are completed)
+            const currentTime = Date.now();
+            if (currentTime - lastSubmissionTime < 10 * 1000) {
+                // return { success: false, message: "You are submitting too fast. Please wait 15 seconds." };
+                return {
+                    statusCode: 429, 
+                    success: false, 
+                    message: "Request limit exceeded."
+                };
+            }
 
-        if (participants.includes(uid)) {
-            return res.status(200).json({
-                success: false,
-                message: "You have already submitted an answer for this question."
-            });
-        }
+            // ✅ Step 4: Now we can update last_submission_time
+            transaction.update(userRef, { last_submission_time: currentTime });
 
-        // Add user to participants list
-        participants.push(uid);
-        await questionRef.update({ participants });
+            // ✅ Step 5: Check if user already submitted the answer
+            if (participants.includes(uid)) {
+                return { success: false, message: "You have already submitted an answer for this question." };
+            }
 
-        // Check if the answer is correct
-        const correctAnswer = questionData.answer; // Assuming the correct answer is stored in Firestore
-        let pointsAwarded = 0;
-        let isCorrect = false;
+            console.log("User has not answered yet, proceeding...");
 
-        if (answer === correctAnswer) {
-            isCorrect = true;
-            pointsAwarded = questionData.points || 0;
+            // ✅ Step 6: Add user to participants and update Firestore
+            participants.push(uid);
+            transaction.update(questionRef, { participants });
 
-            // Increment correct_count for the question
-            const correctCount = (questionData.correct_count || 0) + 1;
-            await questionRef.update({ correct_count: correctCount });
+            const correctAnswer = questionData.answer;
+            let pointsAwarded = 0;
+            let isCorrect = false;
 
-            // Update user's points
-            const userRef = admin.firestore().collection("users").doc(uid);
-            await admin.firestore().runTransaction(async (transaction) => {
-                const userDoc = await transaction.get(userRef);
-                if (!userDoc.exists) {
-                    throw new Error("User not found");
-                }
-                const userData = userDoc.data();
+            if (answer === correctAnswer) {
+                isCorrect = true;
+                pointsAwarded = questionData.points || 0;
+                const correctCount = (questionData.correct_count || 0) + 1;
+
+                // Update question document (correct_count)
+                transaction.update(questionRef, { correct_count: correctCount });
+
+                // Update user points
                 const updatedPoints = (userData.points || 0) + pointsAwarded;
                 transaction.update(userRef, { points: updatedPoints });
-            });
-        }
+            }
 
-        return res.status(200).json({
-            success: true,
-            message: isCorrect ? "Answer submitted successfully" : "Answer submitted",
-            correct: isCorrect,
-            points_awarded: pointsAwarded
+            return {
+                success: true,
+                message: isCorrect ? "Answer submitted successfully" : "Answer submitted",
+                correct: isCorrect,
+                points_awarded: pointsAwarded
+            };
         });
 
+        console.log("Transaction completed", result);
+        return res.status(result.status || 200).json(result);
+
     } catch (error) {
-        console.error("Error processing answer:", error);
+        console.error("Error processing answer:", {
+            message: error.message,
+            stack: error.stack,
+            request: req.body
+        });
         return res.status(500).json({ error: "Internal server error" });
     }
 });
+
+
 
 // Define VAT (15%)
 const VAT_RATE = 0.15;
